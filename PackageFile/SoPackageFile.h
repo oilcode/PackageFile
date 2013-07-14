@@ -50,11 +50,20 @@ namespace GGUI
 			//文件标志。
 			char szFileFlag[SoPackageFileFlagLength];
 			//版本号。
-			int nVersion;
+			__int64 nVersion;
 			//一共有多少个SingleFile。
-			int nFileCount;
+			__int64 nFileCount;
 			//SingleFile信息集合中，第一个stSingleFileInfo距离文件开始处的偏移量。
-			int nOffsetForFirstSingleFileInfo;
+			__int64 nOffsetForFirstSingleFileInfo;
+
+			stPackageHead()
+			{
+				Clear();
+			}
+			void Clear()
+			{
+				memset(this, 0, sizeof(*this));
+			}
 		};
 		//SingleFile的信息。
 		struct stSingleFileInfo
@@ -62,20 +71,25 @@ namespace GGUI
 			//文件名
 			char szFileName[SoPackageFileMAX_PATH];
 			//文件原始大小
-			int nOriginalFileSize;
+			__int64 nOriginalFileSize;
 			//文件在资源包内的大小（有可能经过了压缩）
-			int nEmbededFileSize;
+			__int64 nEmbededFileSize;
 			//该文件距离资源包文件开始处的偏移量。
-			int nOffset;
+			__int64 nOffset;
+
+			void Clear()
+			{
+				memset(this, 0, sizeof(*this));
+			}
 		};
 		struct stReadSingleFile
 		{
-			//资源包内每个文件都有一个文件ID。
-			int nFileID;
+			//资源包内每个文件都有一个文件ID。-1为无效值。
+			__int64 nFileID;
 			//文件原始大小。
-			int nFileSize;
+			__int64 nFileSize;
 			//文件指针。
-			int nFilePointer;
+			__int64 nFilePointer;
 			//存储文件原始的完整内容。
 			char* pFileBuff;
 		};
@@ -89,9 +103,9 @@ namespace GGUI
 		//<<<<<<<<<<<<<<<< 从资源包内读取一个文件 <<<<<<<<<<<<<<<<<<<<<<<<<
 		OperationResult Open(const char* pszFileName, stReadSingleFile& theFile);
 		OperationResult Close(stReadSingleFile& theFile);
-		OperationResult Read(void* pBuff, int nBuffSize, int nReadSize, int& nActuallyReadSize, stReadSingleFile& theFile);
-		OperationResult Tell(int& nFilePos, stReadSingleFile& theFile);
-		OperationResult Seek(int nOffset, SeekOrigin theOrigin, stReadSingleFile& theFile);
+		OperationResult Read(void* pBuff, __int64 nBuffSize, __int64 nReadSize, __int64& nActuallyReadSize, stReadSingleFile& theFile);
+		OperationResult Tell(__int64& nFilePos, stReadSingleFile& theFile);
+		OperationResult Seek(__int64 nOffset, SeekOrigin theOrigin, stReadSingleFile& theFile);
 		//>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
 
 		//<<<<<<<<<<<<<<<< 把一个磁盘文件写入资源包 <<<<<<<<<<<<<<<<<<<<<<<
@@ -108,12 +122,19 @@ namespace GGUI
 		//解析资源包，即提取资源包已有的文件结构信息。
 		OperationResult ParsePackageFile();
 
-		void ReCreateSingleFileInfoList(int nCapacity);
+		void ReCreateSingleFileInfoList(__int64 nCapacity);
 		void ReleaseSingleFileInfoList();
 		//把文件名格式化成如下格式：
 		//1，把'\\'修改成'/'；
 		//2，把大写字母修改成小写字母；
 		void FormatFileFullName(std::string& strOut, const char* pszIn);
+		//判断文件头是否合法。合法返回true，不合法返回false。
+		bool CheckValid_PackageHead(const stPackageHead& theHead);
+		//判断SingleFile信息是否合法。合法返回true，不合法返回false。
+		bool CheckValid_SingleFileInfo(const stSingleFileInfo& theSingleFile);
+
+	private:
+		typedef std::map<std::string, __int64> mapFileName2FileID;
 
 	private:
 		FileMode m_theFileMode;
@@ -123,9 +144,10 @@ namespace GGUI
 		//SingleFile信息列表。
 		stSingleFileInfo* m_pSingleFileInfoList;
 		//m_pSingleFileInfoList中可以容纳多少个stSingleFileInfo对象。
-		int m_nSingleFileInfoListCapacity;
+		__int64 m_nSingleFileInfoListCapacity;
 		//m_pSingleFileInfoList中有效stSingleFileInfo对象的个数。
-		int m_nSingleFileInfoListSize;
+		__int64 m_nSingleFileInfoListSize;
+		mapFileName2FileID m_mapFileName2FileID;
 	};
 }
 //-----------------------------------------------------------------------------
