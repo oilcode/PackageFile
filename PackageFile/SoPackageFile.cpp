@@ -4,8 +4,11 @@
 // 2013-07-13
 //
 // 1，与文件长度大小相关的变量都使用64位整数，支持无限大的资源包文件。
-// 2，最大限度满足跨平台需求。
+// 2，最大限度满足跨平台需求。目前，CRITICAL_SECTION不是跨平台的。
 // 3，用户自己定义版本号规则。
+// 4，SingleFile的文件名最好全部是ASCII字符，最好不出现中文等等。
+// 5，在Mode_Read模式下支持多线程。
+// 6，尚未对资源包内的SingleFile做压缩处理，也没有任何加密。
 //-----------------------------------------------------------------------------
 #include "SoPackageFile.h"
 //-----------------------------------------------------------------------------
@@ -19,12 +22,13 @@ namespace GGUI
 	,m_nSingleFileInfoListCapacity(0)
 	,m_nSingleFileInfoListSize(0)
 	{
-
+		InitializeCriticalSection(&m_Lock);
 	}
 	//-----------------------------------------------------------------------------
 	SoPackageFile::~SoPackageFile()
 	{
 		ReleasePackageFile();
+		DeleteCriticalSection(&m_Lock);
 	}
 	//-----------------------------------------------------------------------------
 	SoPackageFile::OperationResult SoPackageFile::InitPackageFile(const char* pszPackageFile, FileMode theFileMode)
@@ -61,11 +65,11 @@ namespace GGUI
 		else if (theFileMode == Mode_Write)
 		{
 			//写模式，如果资源包不存在则创建。
-			pFile = fopen(pszPackageFile, "r+");
+			pFile = fopen(pszPackageFile, "r+b");
 			if (pFile == 0)
 			{
 				//资源包不存在，则创建。
-				pFile = fopen(pszPackageFile, "w+");
+				pFile = fopen(pszPackageFile, "w+b");
 				if (pFile == 0)
 				{
 					return Result_CreateFileFail;
@@ -93,6 +97,14 @@ namespace GGUI
 				return eResult;
 			}
 		}
+		else
+		{
+			//不需要解析资源包。
+			//预先创建某些资源。
+			ReCreateSingleFileInfoList(10);
+			//预先写入文件头。
+			WritePackageHead();
+		}
 		return Result_OK;
 	}
 	//-----------------------------------------------------------------------------
@@ -112,32 +124,212 @@ namespace GGUI
 	//-----------------------------------------------------------------------------
 	SoPackageFile::OperationResult SoPackageFile::Open(const char* pszFileName, stReadSingleFile& theFile)
 	{
+		if (pszFileName == 0 || pszFileName[0] == 0)
+		{
+			//空指针或者空字符串。
+			return Result_InvalidParam;
+		}
+		EnterCriticalSection(&m_Lock);
+		if (m_theFileMode != Mode_Read)
+		{
+			LeaveCriticalSection(&m_Lock);
+			return Result_FileModeMismatch;
+		}
+		if (m_pFile == 0)
+		{
+			LeaveCriticalSection(&m_Lock);
+			return Result_PackageFileHaveNotOpen;
+		}
+		LeaveCriticalSection(&m_Lock);
+		//格式化文件名。
+		char szFormatFileName[SoPackageFileMAX_PATH];
+		FormatFileFullName(szFormatFileName, pszFileName);
+		std::string strFileName(szFormatFileName);
+		//判断该文件是否存在。
+		EnterCriticalSection(&m_Lock);
+		mapFileName2FileID::iterator it = m_mapFileName2FileID.find(strFileName);
+		if (it == m_mapFileName2FileID.end())
+		{
+			//文件不存在。
+			LeaveCriticalSection(&m_Lock);
+			return Result_SingleFileNotExist;
+		}
+		theFile.nFileID = it->second;
+		theFile.nFileSize = m_pSingleFileInfoList[theFile.nFileID].nOriginalFileSize;
+		LeaveCriticalSection(&m_Lock);
 		return Result_OK;
 	}
 	//-----------------------------------------------------------------------------
 	SoPackageFile::OperationResult SoPackageFile::Close(stReadSingleFile& theFile)
 	{
+		theFile.Clear();
 		return Result_OK;
 	}
 	//-----------------------------------------------------------------------------
-	SoPackageFile::OperationResult SoPackageFile::Read(void* pBuff, __int64 nBuffSize, __int64 nReadSize, __int64& nActuallyReadSize, stReadSingleFile& theFile)
+	SoPackageFile::OperationResult SoPackageFile::Read(void* pBuff, __int64 nElementSize, __int64 nElementCount, __int64& nActuallyReadCount, stReadSingleFile& theFile)
 	{
+		nActuallyReadCount = 0;
+		if (pBuff == 0)
+		{
+			return Result_InvalidParam;
+		}
+		if (theFile.nFileID < 0)
+		{
+			return Result_InvalidFileID;
+		}
+		//把nElementCount修正一下。
+		if (nElementCount * nElementSize > theFile.nFileSize - theFile.nFilePointer)
+		{
+			nElementCount = (theFile.nFileSize - theFile.nFilePointer) / nElementSize;
+		}
+		EnterCriticalSection(&m_Lock);
+		if (m_theFileMode != Mode_Read)
+		{
+			LeaveCriticalSection(&m_Lock);
+			return Result_FileModeMismatch;
+		}
+		if (m_pFile == 0)
+		{
+			LeaveCriticalSection(&m_Lock);
+			return Result_PackageFileHaveNotOpen;
+		}
+		if (theFile.nFileID >= m_nSingleFileInfoListSize)
+		{
+			LeaveCriticalSection(&m_Lock);
+			return Result_InvalidFileID;
+		}
+		const stSingleFileInfo& theFileInfo = m_pSingleFileInfoList[theFile.nFileID];
+		__int64 nSeekResult = _fseeki64(m_pFile, theFileInfo.nOffset+theFile.nFilePointer, SEEK_SET);
+		if (nSeekResult != 0)
+		{
+			LeaveCriticalSection(&m_Lock);
+			return Result_FileOperationError;
+		}
+		nActuallyReadCount = fread(pBuff, nElementSize, nElementCount, m_pFile);
+		LeaveCriticalSection(&m_Lock);
+		//读取完毕。
+		theFile.nFilePointer += nElementSize * nActuallyReadCount;
 		return Result_OK;
 	}
 	//-----------------------------------------------------------------------------
 	SoPackageFile::OperationResult SoPackageFile::Tell(__int64& nFilePos, stReadSingleFile& theFile)
 	{
+		nFilePos = theFile.nFilePointer;
 		return Result_OK;
 	}
 	//-----------------------------------------------------------------------------
 	SoPackageFile::OperationResult SoPackageFile::Seek(__int64 nOffset, SeekOrigin theOrigin, stReadSingleFile& theFile)
 	{
+		__int64 destPos = 0;
+		switch (theOrigin)
+		{
+		case Seek_Set:
+			destPos = nOffset;
+			break;
+		case Seek_Cur:
+			destPos = theFile.nFilePointer + nOffset;
+			break;
+		case Seek_End:
+			destPos = theFile.nFileSize + nOffset;
+			break;
+		default:
+			break;
+		}
+		if (destPos < 0)
+		{
+			destPos = 0;
+		}
+		else if (destPos > theFile.nFileSize)
+		{
+			destPos = theFile.nFileSize;
+		}
+		theFile.nFilePointer = destPos;
 		return Result_OK;
 	}
 	//-----------------------------------------------------------------------------
-	SoPackageFile::OperationResult SoPackageFile::InsertSingleFile()
+	SoPackageFile::OperationResult SoPackageFile::InsertSingleFile(const char* pszDiskFile)
 	{
+		if (pszDiskFile == 0 || pszDiskFile[0] == 0)
+		{
+			//无效指针或者是空字符串。
+			return Result_InvalidParam;
+		}
+		if (m_theFileMode != Mode_Write)
+		{
+			return Result_FileModeMismatch;
+		}
+		if (m_pFile == 0)
+		{
+			return Result_PackageFileHaveNotOpen;
+		}
+		//打开磁盘文件。
+		FILE* pSingleFile = fopen(pszDiskFile, "rb");
+		if (pSingleFile == 0)
+		{
+			return Result_OpenFileFail;
+		}
+		//获取磁盘文件大小。
+		_fseeki64(pSingleFile, 0, SEEK_END);
+		__int64 nDiskFileSize = _ftelli64(pSingleFile);
+		//分配结构体对象，并填充参数。
+		__int64 nFileID = AssignSingleFileInfo();
+		if (nFileID == -1)
+		{
+			fclose(pSingleFile);
+			return Result_MemoryIsEmpty;
+		}
+		FormatFileFullName(m_pSingleFileInfoList[nFileID].szFileName, pszDiskFile);
+		m_pSingleFileInfoList[nFileID].nOriginalFileSize = nDiskFileSize;
+		m_pSingleFileInfoList[nFileID].nOffset = m_stPackageHead.nOffsetForFirstSingleFileInfo;
+		//判断该文件是否已经存在了。
+		mapFileName2FileID::iterator it = m_mapFileName2FileID.find(std::string(m_pSingleFileInfoList[nFileID].szFileName));
+		if (it != m_mapFileName2FileID.end())
+		{
+			//文件已经存在了，不能再次写入。
+			fclose(pSingleFile);
+			//回收SingleFile信息。
+			m_pSingleFileInfoList[nFileID].Clear();
+			--m_nSingleFileInfoListSize;
+			return Result_SingleFileAlreadyExist;
+		}
+		//向资源包中写入这个文件。
+		OperationResult writeResult = WriteSingleFile(pSingleFile, m_pSingleFileInfoList[nFileID]);
+		if (writeResult != Result_OK)
+		{
+			//写入失败。
+			fclose(pSingleFile);
+			//回收SingleFile信息。
+			m_pSingleFileInfoList[nFileID].Clear();
+			--m_nSingleFileInfoListSize;
+			return writeResult;
+		}
+		//完善文件头信息。
+		++m_stPackageHead.nFileCount;
+		m_stPackageHead.nOffsetForFirstSingleFileInfo += m_pSingleFileInfoList[nFileID].nEmbededFileSize;
+		m_mapFileName2FileID.insert(make_pair(std::string(m_pSingleFileInfoList[nFileID].szFileName), nFileID));
 		return Result_OK;
+	}
+	//-----------------------------------------------------------------------------
+	SoPackageFile::OperationResult SoPackageFile::FlushPackageFile()
+	{
+		if (m_theFileMode != Mode_Write)
+		{
+			return Result_FileModeMismatch;
+		}
+		if (m_pFile == 0)
+		{
+			return Result_PackageFileHaveNotOpen;
+		}
+		OperationResult theResult = WritePackageHead();
+		if (theResult == Result_OK)
+		{
+			theResult = WriteAllSingleFileInfo();
+			if (theResult == Result_OK)
+			{
+				fflush(m_pFile);
+			}
+		}
+		return theResult;
 	}
 	//-----------------------------------------------------------------------------
 	SoPackageFile::OperationResult SoPackageFile::WritePackageHead()
@@ -147,7 +339,7 @@ namespace GGUI
 		{
 			return Result_PackageFileHaveNotOpen;
 		}
-		__int64 nSeekResult = fseek(m_pFile, 0, SEEK_SET);
+		__int64 nSeekResult = _fseeki64(m_pFile, 0, SEEK_SET);
 		if (nSeekResult != 0)
 		{
 			return Result_FileOperationError;
@@ -161,7 +353,7 @@ namespace GGUI
 		m_stPackageHead.nVersion = SoPackageFileVersion;
 		//写入。
 		const size_t sizePackageHead = sizeof(m_stPackageHead);
-		size_t nActuallyWrite = fwrite(&m_stPackageHead, sizePackageHead, 1, m_pFile);
+		size_t nActuallyWrite = fwrite(&m_stPackageHead, 1, sizePackageHead, m_pFile);
 		if (nActuallyWrite != sizePackageHead)
 		{
 			//文件头没有写入完整。
@@ -170,8 +362,54 @@ namespace GGUI
 		return Result_OK;
 	}
 	//-----------------------------------------------------------------------------
-	SoPackageFile::OperationResult SoPackageFile::WriteSingleFile(FILE* pSingleFile)
+	SoPackageFile::OperationResult SoPackageFile::WriteSingleFile(FILE* pSingleFile, SoPackageFile::stSingleFileInfo& theFileInfo)
 	{
+		if (pSingleFile == 0)
+		{
+			return Result_InvalidParam;
+		}
+		if (m_pFile == 0)
+		{
+			return Result_PackageFileHaveNotOpen;
+		}
+		//调整文件指针位置，准备写入。
+		__int64 nSeekResult = _fseeki64(pSingleFile, 0, SEEK_SET);
+		if (nSeekResult != 0)
+		{
+			return Result_FileOperationError;
+		}
+		nSeekResult = _fseeki64(m_pFile, theFileInfo.nOffset, SEEK_SET);
+		if (nSeekResult != 0)
+		{
+			return Result_FileOperationError;
+		}
+		//读取源文件。
+		char* pBuff = (char*)malloc(theFileInfo.nOriginalFileSize);
+		const size_t sizeOriginalFileSize = theFileInfo.nOriginalFileSize;
+		size_t nActuallyRead = fread(pBuff, 1, sizeOriginalFileSize, pSingleFile);
+		if (nActuallyRead != sizeOriginalFileSize)
+		{
+			free(pBuff);
+			return Result_FileOperationError;
+		}
+		if (feof(pSingleFile) != 0)
+		{
+			//越界了，这不应该发生。
+			//这时，文件指针应该在文件末尾，再读一个字节才会越界。
+			free(pBuff);
+			return Result_FileOperationError;
+		}
+		//写入到资源包。
+		size_t nActuallyWrite = fwrite(pBuff, 1, sizeOriginalFileSize, m_pFile);
+		if (nActuallyWrite != sizeOriginalFileSize)
+		{
+			free(pBuff);
+			return Result_FileOperationError;
+		}
+		free(pBuff);
+		//完善参数。
+		//没有进行压缩操作。
+		theFileInfo.nEmbededFileSize = theFileInfo.nOriginalFileSize;
 		return Result_OK;
 	}
 	//-----------------------------------------------------------------------------
@@ -182,14 +420,14 @@ namespace GGUI
 		{
 			return Result_PackageFileHaveNotOpen;
 		}
-		__int64 nSeekResult = fseek(m_pFile, m_stPackageHead.nOffsetForFirstSingleFileInfo, SEEK_SET);
+		__int64 nSeekResult = _fseeki64(m_pFile, m_stPackageHead.nOffsetForFirstSingleFileInfo, SEEK_SET);
 		if (nSeekResult != 0)
 		{
 			return Result_FileOperationError;
 		}
 		//写入。
 		const size_t sizeAllSingleFileInfo = m_nSingleFileInfoListSize * sizeof(stSingleFileInfo);
-		size_t nActuallyWrite = fwrite(m_pSingleFileInfoList, sizeAllSingleFileInfo, 1, m_pFile);
+		size_t nActuallyWrite = fwrite(m_pSingleFileInfoList, 1, sizeAllSingleFileInfo, m_pFile);
 		if (nActuallyWrite != sizeAllSingleFileInfo)
 		{
 			//SingleFile信息列表没有写入完整。
@@ -204,14 +442,14 @@ namespace GGUI
 		{
 			return Result_PackageFileHaveNotOpen;
 		}
-		__int64 nSeekResult = fseek(m_pFile, 0, SEEK_SET);
+		__int64 nSeekResult = _fseeki64(m_pFile, 0, SEEK_SET);
 		if (nSeekResult != 0)
 		{
 			return Result_FileOperationError;
 		}
 		//读取文件头。
 		const size_t sizePackageHead = sizeof(m_stPackageHead);
-		size_t nActuallyReadSize = fread(&m_stPackageHead, sizePackageHead, sizePackageHead, m_pFile);
+		size_t nActuallyReadSize = fread(&m_stPackageHead, 1, sizePackageHead, m_pFile);
 		if (nActuallyReadSize != sizePackageHead)
 		{
 			//文件头没有读取完整。
@@ -223,7 +461,7 @@ namespace GGUI
 			return Result_IsNotPackageFile;
 		}
 		//获取SingleFile信息列表。
-		nSeekResult = fseek(m_pFile, m_stPackageHead.nOffsetForFirstSingleFileInfo, SEEK_SET);
+		nSeekResult = _fseeki64(m_pFile, m_stPackageHead.nOffsetForFirstSingleFileInfo, SEEK_SET);
 		if (nSeekResult != 0)
 		{
 			return Result_FileOperationError;
@@ -235,13 +473,14 @@ namespace GGUI
 			return Result_MemoryIsEmpty;
 		}
 		const size_t sizeSingleFileInfoList = m_stPackageHead.nFileCount * sizeof(stSingleFileInfo);
-		size_t nActuallyReadInfoListSize = fread(m_pSingleFileInfoList, sizeSingleFileInfoList, sizeSingleFileInfoList, m_pFile);
+		size_t nActuallyReadInfoListSize = fread(m_pSingleFileInfoList, 1, sizeSingleFileInfoList, m_pFile);
 		if (nActuallyReadInfoListSize != sizeSingleFileInfoList)
 		{
 			//SingleFile信息列表没有读取完整。
 			return Result_FileOperationError;
 		}
 		//SingleFile信息列表读取成功。
+		m_nSingleFileInfoListSize = m_stPackageHead.nFileCount;
 		//下面生成文件名到文件ID的映射。
 		m_mapFileName2FileID.clear();
 		for (__int64 i=0; i<m_stPackageHead.nFileCount; ++i)
@@ -301,13 +540,29 @@ namespace GGUI
 		}
 	}
 	//-----------------------------------------------------------------------------
-	void SoPackageFile::FormatFileFullName(std::string& strOut, const char* pszIn)
+	__int64 SoPackageFile::AssignSingleFileInfo()
 	{
-		strOut = pszIn;
-		__int64 nLength = strOut.length();
-		for (__int64 i=0; i<nLength; ++i)
+		__int64 nResult = -1;
+		//
+		if (m_nSingleFileInfoListSize >= m_nSingleFileInfoListCapacity)
 		{
-			char& theC = strOut[i];
+			ReCreateSingleFileInfoList(m_nSingleFileInfoListCapacity*2);
+		}
+		if (m_nSingleFileInfoListSize < m_nSingleFileInfoListCapacity)
+		{
+			nResult = m_nSingleFileInfoListSize;
+			++m_nSingleFileInfoListSize;
+		}
+		//
+		return nResult;
+	}
+	//-----------------------------------------------------------------------------
+	void SoPackageFile::FormatFileFullName(char* pszOut, const char* pszIn) const
+	{
+		__int64 nCount = 0;
+		while (pszIn[nCount] != 0)
+		{
+			char theC = pszIn[nCount];
 			if (theC >= 'A' && theC <= 'Z')
 			{
 				theC += 32;
@@ -316,6 +571,18 @@ namespace GGUI
 			{
 				theC = '/';
 			}
+			pszOut[nCount] = theC;
+			//
+			++nCount;
+			if (nCount >= SoPackageFileMAX_PATH)
+			{
+				pszOut[SoPackageFileMAX_PATH-1] = 0;
+				break;
+			}
+		}
+		if (nCount < SoPackageFileMAX_PATH)
+		{
+			pszOut[nCount] = 0;
 		}
 	}
 	//-----------------------------------------------------------------------------
@@ -400,7 +667,7 @@ namespace GGUI
 		//
 		if (br)
 		{
-			if (theSingleFile.nOffset <= sizeof(stPackageHead))
+			if (theSingleFile.nOffset < sizeof(stPackageHead))
 			{
 				br = false;
 			}

@@ -9,6 +9,7 @@
 #include <stdio.h>
 #include <string>
 #include <map>
+#include <Windows.h>
 //-----------------------------------------------------------------------------
 #define SoPackageFileFlag "SOPACKAG"
 #define SoPackageFileFlagLength 8
@@ -43,6 +44,10 @@ namespace GGUI
 			Result_CreateFileFail, //创建磁盘文件失败
 			Result_FileOperationError, //C标准库中的文件操作函数返回了失败。
 			Result_MemoryIsEmpty, //申请内存失败，内存不足。
+			Result_FileModeMismatch, //文件模式不匹配，例如Mode_Read模式下，你却想执行Write操作。
+			Result_SingleFileAlreadyExist, //文件已经存在。可能是文件名重复了。
+			Result_SingleFileNotExist, //文件不存在。
+			Result_InvalidFileID, //FileID不正确。
 		};
 		//资源包文件头。
 		struct stPackageHead
@@ -63,6 +68,7 @@ namespace GGUI
 			void Clear()
 			{
 				memset(this, 0, sizeof(*this));
+				nOffsetForFirstSingleFileInfo = sizeof(*this);
 			}
 		};
 		//SingleFile的信息。
@@ -91,7 +97,24 @@ namespace GGUI
 			//文件指针。
 			__int64 nFilePointer;
 			//存储文件原始的完整内容。
+			//如果资源包内对SingleFile做了压缩操作，则pFileBuff存储解压之后的原始文件，
+			//才能向外界提供对SingleFile的读操作。
 			char* pFileBuff;
+
+			stReadSingleFile():nFileID(-1),nFileSize(0),nFilePointer(0),pFileBuff(0)
+			{
+			}
+			void Clear()
+			{
+				nFileID = -1;
+				nFileSize = 0;
+				nFilePointer = 0;
+				if (pFileBuff)
+				{
+					free(pFileBuff);
+					pFileBuff = 0;
+				}
+			}
 		};
 
 	public:
@@ -103,20 +126,21 @@ namespace GGUI
 		//<<<<<<<<<<<<<<<< 从资源包内读取一个文件 <<<<<<<<<<<<<<<<<<<<<<<<<
 		OperationResult Open(const char* pszFileName, stReadSingleFile& theFile);
 		OperationResult Close(stReadSingleFile& theFile);
-		OperationResult Read(void* pBuff, __int64 nBuffSize, __int64 nReadSize, __int64& nActuallyReadSize, stReadSingleFile& theFile);
+		OperationResult Read(void* pBuff, __int64 nElementSize, __int64 nElementCount, __int64& nActuallyReadCount, stReadSingleFile& theFile);
 		OperationResult Tell(__int64& nFilePos, stReadSingleFile& theFile);
 		OperationResult Seek(__int64 nOffset, SeekOrigin theOrigin, stReadSingleFile& theFile);
 		//>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
 
 		//<<<<<<<<<<<<<<<< 把一个磁盘文件写入资源包 <<<<<<<<<<<<<<<<<<<<<<<
-		OperationResult InsertSingleFile();
+		OperationResult InsertSingleFile(const char* pszDiskFile);
+		OperationResult FlushPackageFile();
 		//>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
 
 	private:
 		//写入资源包文件头。
 		OperationResult WritePackageHead();
 		//把一个原始的SingleFile写入到资源包中。
-		OperationResult WriteSingleFile(FILE* pSingleFile);
+		OperationResult WriteSingleFile(FILE* pSingleFile, stSingleFileInfo& theFileInfo);
 		//把stSingleFileInfo信息集合写入到资源包中。
 		OperationResult WriteAllSingleFileInfo();
 		//解析资源包，即提取资源包已有的文件结构信息。
@@ -124,10 +148,12 @@ namespace GGUI
 
 		void ReCreateSingleFileInfoList(__int64 nCapacity);
 		void ReleaseSingleFileInfoList();
+		__int64 AssignSingleFileInfo();
+
 		//把文件名格式化成如下格式：
 		//1，把'\\'修改成'/'；
 		//2，把大写字母修改成小写字母；
-		void FormatFileFullName(std::string& strOut, const char* pszIn);
+		void FormatFileFullName(char* pszOut, const char* pszIn) const;
 		//判断文件头是否合法。合法返回true，不合法返回false。
 		bool CheckValid_PackageHead(const stPackageHead& theHead);
 		//判断SingleFile信息是否合法。合法返回true，不合法返回false。
@@ -148,6 +174,8 @@ namespace GGUI
 		//m_pSingleFileInfoList中有效stSingleFileInfo对象的个数。
 		__int64 m_nSingleFileInfoListSize;
 		mapFileName2FileID m_mapFileName2FileID;
+		//多线程锁。
+		CRITICAL_SECTION m_Lock;
 	};
 }
 //-----------------------------------------------------------------------------
