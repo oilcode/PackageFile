@@ -14,7 +14,7 @@
 #define SoPackageFileFlag "SOPACKAG"
 #define SoPackageFileFlagLength 8
 #define SoPackageFileVersion 1
-#define SoPackageFileMAX_PATH 260
+#define SoPackageFileMAX_PATH 100
 //-----------------------------------------------------------------------------
 namespace GGUI
 {
@@ -48,6 +48,7 @@ namespace GGUI
 			Result_SingleFileAlreadyExist, //文件已经存在。可能是文件名重复了。
 			Result_SingleFileNotExist, //文件不存在。
 			Result_InvalidFileID, //FileID不正确。
+			Result_FileNameLengthTooLong, //文件名太长了。
 		};
 		//资源包文件头。
 		struct stPackageHead

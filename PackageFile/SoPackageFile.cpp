@@ -9,6 +9,7 @@
 // 4，SingleFile的文件名最好全部是ASCII字符，最好不出现中文等等。
 // 5，在Mode_Read模式下支持多线程。
 // 6，尚未对资源包内的SingleFile做压缩处理，也没有任何加密。
+// 7，SingleFile的文件名长度不能超过SoPackageFileMAX_PATH。
 //-----------------------------------------------------------------------------
 #include "SoPackageFile.h"
 //-----------------------------------------------------------------------------
@@ -205,7 +206,7 @@ namespace GGUI
 			LeaveCriticalSection(&m_Lock);
 			return Result_FileOperationError;
 		}
-		nActuallyReadCount = fread(pBuff, nElementSize, nElementCount, m_pFile);
+		nActuallyReadCount = fread(pBuff, (size_t)nElementSize, (size_t)nElementCount, m_pFile);
 		LeaveCriticalSection(&m_Lock);
 		//读取完毕。
 		theFile.nFilePointer += nElementSize * nActuallyReadCount;
@@ -253,6 +254,11 @@ namespace GGUI
 		{
 			//无效指针或者是空字符串。
 			return Result_InvalidParam;
+		}
+		__int64 nDiskFileNameLength = strlen(pszDiskFile);
+		if (nDiskFileNameLength >= SoPackageFileMAX_PATH)
+		{
+			return Result_FileNameLengthTooLong;
 		}
 		if (m_theFileMode != Mode_Write)
 		{
@@ -384,8 +390,8 @@ namespace GGUI
 			return Result_FileOperationError;
 		}
 		//读取源文件。
-		char* pBuff = (char*)malloc(theFileInfo.nOriginalFileSize);
-		const size_t sizeOriginalFileSize = theFileInfo.nOriginalFileSize;
+		char* pBuff = (char*)malloc((size_t)(theFileInfo.nOriginalFileSize));
+		const size_t sizeOriginalFileSize = (size_t)(theFileInfo.nOriginalFileSize);
 		size_t nActuallyRead = fread(pBuff, 1, sizeOriginalFileSize, pSingleFile);
 		if (nActuallyRead != sizeOriginalFileSize)
 		{
@@ -426,7 +432,7 @@ namespace GGUI
 			return Result_FileOperationError;
 		}
 		//写入。
-		const size_t sizeAllSingleFileInfo = m_nSingleFileInfoListSize * sizeof(stSingleFileInfo);
+		const size_t sizeAllSingleFileInfo = ((size_t)m_nSingleFileInfoListSize) * sizeof(stSingleFileInfo);
 		size_t nActuallyWrite = fwrite(m_pSingleFileInfoList, 1, sizeAllSingleFileInfo, m_pFile);
 		if (nActuallyWrite != sizeAllSingleFileInfo)
 		{
@@ -472,7 +478,7 @@ namespace GGUI
 		{
 			return Result_MemoryIsEmpty;
 		}
-		const size_t sizeSingleFileInfoList = m_stPackageHead.nFileCount * sizeof(stSingleFileInfo);
+		const size_t sizeSingleFileInfoList = ((size_t)(m_stPackageHead.nFileCount)) * sizeof(stSingleFileInfo);
 		size_t nActuallyReadInfoListSize = fread(m_pSingleFileInfoList, 1, sizeSingleFileInfoList, m_pFile);
 		if (nActuallyReadInfoListSize != sizeSingleFileInfoList)
 		{
@@ -502,15 +508,17 @@ namespace GGUI
 	{
 		stSingleFileInfo* pSingleFileInfoList_Temp = m_pSingleFileInfoList;
 		//
-		m_pSingleFileInfoList = (stSingleFileInfo*)malloc(nCapacity * sizeof(stSingleFileInfo));
+		size_t sizeCapacity = (size_t)nCapacity;
+		m_pSingleFileInfoList = (stSingleFileInfo*)malloc(sizeCapacity * sizeof(stSingleFileInfo));
 		if (m_pSingleFileInfoList)
 		{
 			//清零
-			memset(m_pSingleFileInfoList, 0, nCapacity * sizeof(stSingleFileInfo));
+			memset(m_pSingleFileInfoList, 0, sizeCapacity * sizeof(stSingleFileInfo));
 			//拷贝已有的值
 			if (m_nSingleFileInfoListSize > 0)
 			{
-				memcpy(m_pSingleFileInfoList, pSingleFileInfoList_Temp, m_nSingleFileInfoListSize*sizeof(stSingleFileInfo));
+				size_t sizeCount_SingleFileInfo = (size_t)m_nSingleFileInfoListSize;
+				memcpy(m_pSingleFileInfoList, pSingleFileInfoList_Temp, sizeCount_SingleFileInfo*sizeof(stSingleFileInfo));
 			}
 			m_nSingleFileInfoListCapacity = nCapacity;
 		}
@@ -565,6 +573,7 @@ namespace GGUI
 			char theC = pszIn[nCount];
 			if (theC >= 'A' && theC <= 'Z')
 			{
+				//大写字母转换为小写字母
 				theC += 32;
 			}
 			else if (theC == '\\')
