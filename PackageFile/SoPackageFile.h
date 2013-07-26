@@ -14,7 +14,7 @@
 #define SoPackageFileFlag "SOPACKAG"
 #define SoPackageFileFlagLength 8
 #define SoPackageFileVersion 1
-#define SoPackageFileMAX_PATH 100
+#define SoPackageFileMAX_PATH 150
 //-----------------------------------------------------------------------------
 namespace GGUI
 {
