@@ -231,7 +231,14 @@ namespace GGUI
 			destPos = theFile.nFilePointer + nOffset;
 			break;
 		case Seek_End:
-			destPos = theFile.nFileSize + nOffset;
+			if (nOffset > 0)
+			{
+				destPos = theFile.nFileSize - nOffset;
+			}
+			else
+			{
+				destPos = theFile.nFileSize + nOffset;
+			}
 			break;
 		default:
 			break;
